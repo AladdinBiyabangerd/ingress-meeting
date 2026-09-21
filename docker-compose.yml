@@ -1,0 +1,27 @@
+services:
+  ingress-meeting:
+    build: .
+    image: ingress-meeting:latest
+    ports:
+      - "8080:8080"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      WHISPER_MODEL: large-v3
+      WHISPER_MODEL_DIR: /models/whisper
+      WHISPER_LANGUAGE: az
+      WHISPER_DEVICE: cpu
+      UPLOAD_DIR: /data/uploads
+      RESULTS_DIR: /data/results
+      JAVA_OPTS: ${JAVA_OPTS:--Xms2g -Xmx8g}
+    volumes:
+      - whisper-models:/models/whisper
+      - whisper-uploads:/data/uploads
+      - whisper-results:/data/results
+    restart: unless-stopped
+    # large-v3 on CPU needs substantial RAM
+    mem_limit: 16g
+
+volumes:
+  whisper-models:
+  whisper-uploads:
+  whisper-results:

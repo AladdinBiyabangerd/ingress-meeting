@@ -1,0 +1,33 @@
+app:
+  upload-dir: ${UPLOAD_DIR:${java.io.tmpdir}/ingress-meeting-uploads}
+  results-dir: ${RESULTS_DIR:${java.io.tmpdir}/ingress-meeting-results}
+
+spring:
+  application:
+    name: ingress-meeting
+  servlet:
+    multipart:
+      max-file-size: 1000MB
+      max-request-size: 1000MB
+      location: ${UPLOAD_DIR:${java.io.tmpdir}/ingress-meeting-uploads}
+
+whisper:
+  model: ${WHISPER_MODEL:large-v3}
+  python-path: ${WHISPER_PYTHON_PATH:python3}
+  model-dir: ${WHISPER_MODEL_DIR:${user.home}/.cache/whisper}
+  device: ${WHISPER_DEVICE:cpu}
+  language: ${WHISPER_LANGUAGE:az}
+
+openai:
+  api-key: ${OPENAI_API_KEY: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}
+  base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+
+server:
+  port: ${SERVER_PORT:8080}
+
+logging:
+  level:
+    root: INFO
+    az.aladdin.ingressmeeting: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
