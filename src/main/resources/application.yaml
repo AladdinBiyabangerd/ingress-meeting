@@ -1,6 +1,7 @@
 app:
   upload-dir: ${UPLOAD_DIR:${java.io.tmpdir}/ingress-meeting-uploads}
   results-dir: ${RESULTS_DIR:${java.io.tmpdir}/ingress-meeting-results}
+  api-secret: ${API_SECRET_KEY:}
 
 spring:
   application:
@@ -19,7 +20,7 @@ whisper:
   language: ${WHISPER_LANGUAGE:az}
 
 openai:
-  api-key: ${OPENAI_API_KEY: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}
+  api-key: ${OPENAI_API_KEY:}
   base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
 
 server:

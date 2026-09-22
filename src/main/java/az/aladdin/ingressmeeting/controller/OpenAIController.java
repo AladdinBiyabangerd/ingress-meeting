@@ -1,6 +1,7 @@
 package az.aladdin.ingressmeeting.controller;
 
 import az.aladdin.ingressmeeting.service.OpenAIService;
+import az.aladdin.ingressmeeting.service.SummaryPrompt;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,12 +25,7 @@ public class OpenAIController {
     @PostMapping("/process")
     public ResponseEntity<String> processText(@RequestBody Map<String, String> request) {
         String text = request.get("text");
-        String prompt = request.getOrDefault("prompt",
-            "Summarize the following text in plain, simple language. " +
-            "Keep all technical terms, proper names, abbreviations, and specialized vocabulary EXACTLY as they appear. " +
-            "Do not explain or simplify terminology. Only simplify the surrounding language and structure. " +
-            "Provide a concise summary."
-        );
+        String prompt = request.getOrDefault("prompt", SummaryPrompt.DEFAULT);
 
         if (text == null || text.trim().isEmpty()) {
             log.warn("API /openai/process rejected | reason=empty_text");

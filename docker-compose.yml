@@ -6,6 +6,7 @@ services:
       - "8080:8080"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      API_SECRET_KEY: ${API_SECRET_KEY:-}
       WHISPER_MODEL: large-v3
       WHISPER_MODEL_DIR: /models/whisper
       WHISPER_LANGUAGE: az
