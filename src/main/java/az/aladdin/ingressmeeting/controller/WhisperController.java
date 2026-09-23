@@ -71,7 +71,7 @@ public class WhisperController {
             return ResponseEntity.ok(Map.of(
                 "jobId", jobId,
                 "status", "PROCESSING",
-                "message", "Transcription and summarization started. Poll /api/whisper/status/{jobId} for results."
+                "message", "Transcription and summarization started. Result will be pushed to Academy callback when ready."
             ));
         } catch (Exception e) {
             log.error("API /transcribe rejected | jobId={} error={}", jobId, e.getMessage(), e);

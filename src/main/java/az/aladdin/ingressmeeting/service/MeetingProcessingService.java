@@ -17,17 +17,20 @@ public class MeetingProcessingService {
     private final UploadStorageService uploadStorageService;
     private final TranscriptStoreService transcriptStoreService;
     private final SummaryPrompt summaryPrompt;
+    private final AcademyCallbackService academyCallbackService;
 
     public MeetingProcessingService(WhisperService whisperService,
                                     OpenAIService openAIService,
                                     UploadStorageService uploadStorageService,
                                     TranscriptStoreService transcriptStoreService,
-                                    SummaryPrompt summaryPrompt) {
+                                    SummaryPrompt summaryPrompt,
+                                    AcademyCallbackService academyCallbackService) {
         this.whisperService = whisperService;
         this.openAIService = openAIService;
         this.uploadStorageService = uploadStorageService;
         this.transcriptStoreService = transcriptStoreService;
         this.summaryPrompt = summaryPrompt;
+        this.academyCallbackService = academyCallbackService;
     }
 
     @Async
@@ -44,7 +47,9 @@ public class MeetingProcessingService {
             transcription = whisperService.transcribe(upload.path(), filename);
             log.info("Step 1/2 done | jobId={} transcriptionChars={}", jobId, transcription.length());
 
-            return CompletableFuture.completedFuture(summarizeAndPersist(jobId, filename, transcription, start));
+            ProcessingResult done = summarizeAndPersist(jobId, filename, transcription, start);
+            academyCallbackService.notifyJobResult(jobId, done);
+            return CompletableFuture.completedFuture(done);
         } catch (Exception e) {
             log.error("Meeting processing failed before/during transcription | jobId={} elapsedMs={} error={}",
                     jobId, System.currentTimeMillis() - start, e.getMessage(), e);
@@ -55,9 +60,10 @@ public class MeetingProcessingService {
             } catch (Exception storeError) {
                 log.error("Failed to persist FAILED job | jobId={} error={}", jobId, storeError.getMessage());
             }
-            return CompletableFuture.completedFuture(
-                    new ProcessingResult(JobRecord.Status.FAILED, null, null, e.getMessage(), null)
-            );
+            ProcessingResult failedResult =
+                    new ProcessingResult(JobRecord.Status.FAILED, null, null, e.getMessage(), null);
+            academyCallbackService.notifyJobResult(jobId, failedResult);
+            return CompletableFuture.completedFuture(failedResult);
         } finally {
             uploadStorageService.deleteQuietly(upload);
         }
@@ -108,7 +114,10 @@ public class MeetingProcessingService {
             transcriptStoreService.saveFinal(completed);
 
             log.info("Summary retry succeeded | jobId={} elapsedMs={}", jobId, System.currentTimeMillis() - start);
-            return new ProcessingResult(JobRecord.Status.COMPLETED, partial.getTranscription(), summary, null, null);
+            ProcessingResult done = new ProcessingResult(
+                    JobRecord.Status.COMPLETED, partial.getTranscription(), summary, null, null);
+            academyCallbackService.notifyJobResult(jobId, done);
+            return done;
         } catch (Exception e) {
             log.warn("Summary retry failed | jobId={} error={}", jobId, e.getMessage());
             partial.setSummaryError(e.getMessage());
@@ -119,13 +128,16 @@ public class MeetingProcessingService {
             } catch (Exception storeError) {
                 log.error("Failed updating PARTIAL after retry | jobId={} error={}", jobId, storeError.getMessage());
             }
-            return new ProcessingResult(
+            ProcessingResult stillPartial = new ProcessingResult(
                     JobRecord.Status.PARTIAL,
                     partial.getTranscription(),
                     null,
                     null,
                     e.getMessage()
             );
+            // Academy already has transcription from the first PARTIAL callback; push again for freshness.
+            academyCallbackService.notifyJobResult(jobId, stillPartial);
+            return stillPartial;
         }
     }
 

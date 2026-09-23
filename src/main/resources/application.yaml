@@ -3,6 +3,12 @@ app:
   results-dir: ${RESULTS_DIR:${java.io.tmpdir}/ingress-meeting-results}
   api-secret: ${API_SECRET_KEY:}
 
+# Academy webhook base (no trailing slash). Example:
+#   https://ingress.academy/portal/api/meeting/jobs
+# Meeting POSTs {base}/{jobId}/complete when transcription finishes.
+academy:
+  callback-base-url: ${ACADEMY_CALLBACK_BASE_URL:}
+
 spring:
   application:
     name: ingress-meeting
