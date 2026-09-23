@@ -1,4 +1,4 @@
-# ---- build ----
+# ---- Java build ----
 FROM eclipse-temurin:25-jdk-jammy AS build
 WORKDIR /workspace
 
@@ -11,41 +11,58 @@ RUN ./gradlew bootJar -x test --no-daemon \
  && JAR=$(ls build/libs/*.jar | grep -v plain | head -1) \
  && cp "$JAR" /workspace/app.jar
 
+# ---- whisper.cpp build ----
+FROM debian:bookworm-slim AS whisper-build
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      git \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pin a known release for reproducible builds
+ARG WHISPER_CPP_REF=v1.7.5
+WORKDIR /src
+RUN git clone --depth 1 --branch "${WHISPER_CPP_REF}" https://github.com/ggerganov/whisper.cpp.git . \
+ && cmake -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DGGML_NATIVE=OFF \
+ && cmake --build build -j"$(nproc)" --target whisper-cli \
+ && test -x build/bin/whisper-cli \
+ && cp build/bin/whisper-cli /usr/local/bin/whisper-cli \
+ && chmod +x /usr/local/bin/whisper-cli
+
 # ---- runtime ----
 FROM eclipse-temurin:25-jre-jammy
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    WHISPER_MODEL=large-v3 \
+    WHISPER_MODEL=large-v3-q5_0 \
     WHISPER_MODEL_DIR=/models/whisper \
     WHISPER_LANGUAGE=az \
-    WHISPER_DEVICE=cpu \
+    WHISPER_THREADS=0 \
+    WHISPER_CLI_PATH=/usr/local/bin/whisper-cli \
     UPLOAD_DIR=/data/uploads \
     RESULTS_DIR=/data/results \
-    PYTHONUNBUFFERED=1 \
-    JAVA_OPTS="-Xms2g -Xmx8g"
+    JAVA_OPTS="-Xms512m -Xmx2g"
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      python3 \
-      python3-pip \
-      python3-venv \
       ffmpeg \
       curl \
       ca-certificates \
       bash \
- && rm -rf /var/lib/apt/lists/* \
- && python3 -m pip install --no-cache-dir --upgrade pip \
- && python3 -m pip install --no-cache-dir \
-      --extra-index-url https://download.pytorch.org/whl/cpu \
-      torch \
-      openai-whisper
+ && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
+COPY --from=whisper-build /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
 COPY --from=build /workspace/app.jar /app/app.jar
 COPY docker/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh \
- && mkdir -p /models/whisper /data/uploads /data/results/partial /data/results/final
+
+WORKDIR /app
+RUN chmod +x /app/entrypoint.sh /usr/local/bin/whisper-cli \
+ && mkdir -p /models/whisper /data/uploads /data/results/partial /data/results/final \
+ && whisper-cli -h >/dev/null 2>&1 || true
 
 VOLUME ["/models/whisper", "/data/uploads", "/data/results"]
 EXPOSE 8080

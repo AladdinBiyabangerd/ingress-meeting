@@ -8,19 +8,21 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       API_SECRET_KEY: ${API_SECRET_KEY:-}
       ACADEMY_CALLBACK_BASE_URL: ${ACADEMY_CALLBACK_BASE_URL:-}
-      WHISPER_MODEL: large-v3
+      # whisper.cpp ggml (quantized large-v3 — much faster on CPU than PyTorch)
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3-q5_0}
       WHISPER_MODEL_DIR: /models/whisper
       WHISPER_LANGUAGE: az
-      WHISPER_DEVICE: cpu
+      WHISPER_THREADS: ${WHISPER_THREADS:-0}
+      WHISPER_CLI_PATH: /usr/local/bin/whisper-cli
       UPLOAD_DIR: /data/uploads
       RESULTS_DIR: /data/results
-      JAVA_OPTS: ${JAVA_OPTS:--Xms2g -Xmx8g}
+      # Java heap can stay modest; whisper.cpp uses native RAM
+      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx2g}
     volumes:
       - whisper-models:/models/whisper
       - whisper-uploads:/data/uploads
       - whisper-results:/data/results
     restart: unless-stopped
-    # large-v3 on CPU needs substantial RAM
     mem_limit: 16g
 
 volumes:

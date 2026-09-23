@@ -19,11 +19,14 @@ spring:
       location: ${UPLOAD_DIR:${java.io.tmpdir}/ingress-meeting-uploads}
 
 whisper:
-  model: ${WHISPER_MODEL:large-v3}
-  python-path: ${WHISPER_PYTHON_PATH:python3}
+  # ggml model name without path, e.g. large-v3-q5_0 → ggml-large-v3-q5_0.bin
+  model: ${WHISPER_MODEL:large-v3-q5_0}
   model-dir: ${WHISPER_MODEL_DIR:${user.home}/.cache/whisper}
-  device: ${WHISPER_DEVICE:cpu}
+  cli-path: ${WHISPER_CLI_PATH:whisper-cli}
+  ffmpeg-path: ${WHISPER_FFMPEG_PATH:ffmpeg}
   language: ${WHISPER_LANGUAGE:az}
+  # 0 = use all available CPU cores
+  threads: ${WHISPER_THREADS:0}
 
 openai:
   api-key: ${OPENAI_API_KEY:}

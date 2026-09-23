@@ -14,77 +14,69 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
+/**
+ * Local transcription via whisper.cpp ({@code whisper-cli}), not Python/PyTorch.
+ *
+ * Flow: ffmpeg → 16 kHz mono WAV → {@code whisper-cli -m ggml-*.bin -otxt}.
+ */
 @Slf4j
 @Service
 public class WhisperService {
 
-    @Value("${whisper.model:base}")
+    @Value("${whisper.model:large-v3-q5_0}")
     private String modelName;
-
-    @Value("${whisper.python-path:python3}")
-    private String pythonPath;
 
     @Value("${whisper.model-dir:${user.home}/.cache/whisper}")
     private String modelDir;
 
-    @Value("${whisper.device:cpu}")
-    private String device;
+    @Value("${whisper.cli-path:whisper-cli}")
+    private String cliPath;
+
+    @Value("${whisper.ffmpeg-path:ffmpeg}")
+    private String ffmpegPath;
 
     @Value("${whisper.language:az}")
     private String language;
 
-    private final Map<String, Object> modelCache = new ConcurrentHashMap<>();
-    private volatile boolean modelLoaded = false;
+    @Value("${whisper.threads:0}")
+    private int threads;
+
+    private volatile boolean modelReady = false;
+    private Path resolvedModelFile;
 
     @PostConstruct
     public void init() {
-        log.info("Whisper init started | model={} device={} language={} modelDir={} python={}",
-                modelName, device, language, modelDir, pythonPath);
         new Thread(() -> {
             long start = System.currentTimeMillis();
             try {
-                loadModel(modelName);
-                modelLoaded = true;
-                log.info("Whisper model ready | model={} elapsedMs={}",
-                        modelName, System.currentTimeMillis() - start);
+                resolvedModelFile = resolveModelFile();
+                ensureBinary(cliPath, "whisper-cli");
+                ensureBinary(ffmpegPath, "ffmpeg");
+                if (!Files.isRegularFile(resolvedModelFile)) {
+                    throw new IllegalStateException("Whisper ggml model missing: " + resolvedModelFile
+                            + " (entrypoint should download it into WHISPER_MODEL_DIR)");
+                }
+                modelReady = true;
+                log.info("Whisper.cpp ready | cli={} model={} sizeBytes={} language={} threads={} elapsedMs={}",
+                        cliPath,
+                        resolvedModelFile,
+                        Files.size(resolvedModelFile),
+                        language,
+                        effectiveThreads(),
+                        System.currentTimeMillis() - start);
             } catch (Exception e) {
-                log.error("Whisper model load failed | model={} elapsedMs={} error={}",
-                        modelName, System.currentTimeMillis() - start, e.getMessage(), e);
+                modelReady = false;
+                log.error("Whisper.cpp init failed | elapsedMs={} error={}",
+                        System.currentTimeMillis() - start, e.getMessage(), e);
             }
         }, "whisper-model-loader").start();
-    }
-
-    private void loadModel(String model) throws IOException, InterruptedException {
-        String cacheKey = model + "_" + device;
-        if (modelCache.containsKey(cacheKey)) {
-            log.info("Whisper model already in cache | key={}", cacheKey);
-            return;
-        }
-
-        log.info("Loading Whisper model into memory | model={} device={} dir={}", model, device, modelDir);
-
-        String pythonScript = "import os; os.environ['PYTHONHTTPSVERIFY']='0'; " +
-                "import ssl; ssl._create_default_https_context = ssl._create_unverified_context; " +
-                "import whisper; " +
-                "print('PYTHON: loading model...', flush=True); " +
-                "model = whisper.load_model('" + model + "', download_root='" + modelDir + "', device='" + device + "'); " +
-                "import pickle; " +
-                "f = open('/tmp/whisper_model_" + model + "_" + device + ".pkl', 'wb'); " +
-                "pickle.dump(model, f); f.close(); " +
-                "print('MODEL_LOADED', flush=True)";
-
-        int exitCode = runPython(pythonScript, "model-load");
-        if (exitCode != 0) {
-            throw new RuntimeException("Model load failed with exit code " + exitCode);
-        }
-        modelCache.put(cacheKey, new Object());
-        log.info("Whisper model pickled | /tmp/whisper_model_{}_{}.pkl", model, device);
     }
 
     public String transcribe(MultipartFile audioFile) throws IOException, InterruptedException {
@@ -92,7 +84,7 @@ public class WhisperService {
         String originalFilename = audioFile.getOriginalFilename();
         String extension = originalFilename != null && originalFilename.contains(".")
                 ? originalFilename.substring(originalFilename.lastIndexOf("."))
-                : ".wav";
+                : ".bin";
         Path tempAudioFile = tempDir.resolve(UUID.randomUUID() + extension);
         try (var in = audioFile.getInputStream()) {
             Files.copy(in, tempAudioFile);
@@ -107,41 +99,22 @@ public class WhisperService {
     public String transcribe(Path audioFile, String originalFilename) throws IOException, InterruptedException {
         long size = Files.size(audioFile);
         log.info("Transcription requested | file={} path={} sizeBytes={} modelReady={}",
-                originalFilename, audioFile.toAbsolutePath(), size, modelLoaded);
+                originalFilename, audioFile.toAbsolutePath(), size, modelReady);
 
-        long waitStart = System.currentTimeMillis();
-        while (!modelLoaded) {
-            if (System.currentTimeMillis() - waitStart > TimeUnit.MINUTES.toMillis(30)) {
-                throw new IllegalStateException("Timed out waiting for Whisper model to load");
-            }
-            Thread.sleep(500);
-        }
-        if (System.currentTimeMillis() - waitStart > 1000) {
-            log.info("Waited for model | waitMs={}", System.currentTimeMillis() - waitStart);
-        }
+        waitUntilReady();
 
         if (!Files.isRegularFile(audioFile)) {
             throw new IOException("Audio file missing before transcription: " + audioFile);
         }
 
-        log.info("Starting transcription | path={} language={}", audioFile.toAbsolutePath(), language);
-
+        Path workDir = Files.createTempDirectory("whisper-cpp-");
         long start = System.currentTimeMillis();
         try {
-            String pythonScript = "import os; os.environ['PYTHONHTTPSVERIFY']='0'; " +
-                    "import ssl; ssl._create_default_https_context = ssl._create_unverified_context; " +
-                    "import whisper; import pickle; " +
-                    "print('PYTHON: starting transcription...', flush=True); " +
-                    "f = open('/tmp/whisper_model_" + modelName + "_" + device + ".pkl', 'rb'); " +
-                    "model = pickle.load(f); f.close(); " +
-                    "result = model.transcribe('" + audioFile.toAbsolutePath().toString().replace("'", "\\'") +
-                    "', fp16=False, language='" + language.replace("'", "") + "'); " +
-                    "print('TRANSCRIPT_START', flush=True); " +
-                    "print(result['text'].strip()); " +
-                    "print('TRANSCRIPT_END', flush=True)";
-
-            String output = runPythonCapture(pythonScript, "transcribe");
-            String text = extractTranscript(output);
+            Path wav = workDir.resolve("audio.wav");
+            log.info("Starting whisper.cpp | path={} language={} threads={} model={}",
+                    audioFile.toAbsolutePath(), language, effectiveThreads(), resolvedModelFile.getFileName());
+            convertToWav(audioFile, wav);
+            String text = runWhisperCli(wav, workDir);
             log.info("Transcription completed | file={} elapsedMs={} chars={}",
                     originalFilename, System.currentTimeMillis() - start, text.length());
             log.debug("Transcription text preview | {}", preview(text, 200));
@@ -150,17 +123,167 @@ public class WhisperService {
             log.error("Transcription failed | file={} elapsedMs={} error={}",
                     originalFilename, System.currentTimeMillis() - start, e.getMessage(), e);
             throw e;
+        } finally {
+            deleteRecursively(workDir);
         }
     }
 
     @Async
     public CompletableFuture<String> transcribeAsync(MultipartFile audioFile) {
         try {
-            String result = transcribe(audioFile);
-            return CompletableFuture.completedFuture(result);
+            return CompletableFuture.completedFuture(transcribe(audioFile));
         } catch (Exception e) {
             log.error("Async transcription failed | error={}", e.getMessage(), e);
             return CompletableFuture.failedFuture(e);
+        }
+    }
+
+    private void waitUntilReady() throws InterruptedException {
+        long waitStart = System.currentTimeMillis();
+        while (!modelReady) {
+            if (System.currentTimeMillis() - waitStart > TimeUnit.MINUTES.toMillis(30)) {
+                throw new IllegalStateException("Timed out waiting for whisper.cpp model to become ready");
+            }
+            Thread.sleep(500);
+        }
+        if (System.currentTimeMillis() - waitStart > 1000) {
+            log.info("Waited for model | waitMs={}", System.currentTimeMillis() - waitStart);
+        }
+    }
+
+    private Path resolveModelFile() {
+        String raw = (modelName == null ? "" : modelName.trim());
+        if (raw.isEmpty()) {
+            raw = "large-v3-q5_0";
+        }
+        String fileName;
+        if (raw.endsWith(".bin")) {
+            fileName = raw;
+        } else if (raw.startsWith("ggml-")) {
+            fileName = raw + ".bin";
+        } else {
+            fileName = "ggml-" + raw + ".bin";
+        }
+        return Path.of(modelDir).resolve(fileName).toAbsolutePath().normalize();
+    }
+
+    private int effectiveThreads() {
+        if (threads > 0) {
+            return threads;
+        }
+        int cores = Runtime.getRuntime().availableProcessors();
+        return Math.max(1, cores);
+    }
+
+    private void convertToWav(Path input, Path wavOut) throws IOException, InterruptedException {
+        List<String> cmd = List.of(
+                ffmpegPath,
+                "-y",
+                "-i", input.toAbsolutePath().toString(),
+                "-ar", "16000",
+                "-ac", "1",
+                "-c:a", "pcm_s16le",
+                wavOut.toAbsolutePath().toString()
+        );
+        log.info("ffmpeg convert | {}", String.join(" ", cmd));
+        String output = runCommand(cmd, "ffmpeg");
+        if (!Files.isRegularFile(wavOut) || Files.size(wavOut) == 0) {
+            throw new IOException("ffmpeg did not produce wav: " + wavOut + " output=" + preview(output, 400));
+        }
+        log.info("ffmpeg done | wavBytes={}", Files.size(wavOut));
+    }
+
+    private String runWhisperCli(Path wav, Path workDir) throws IOException, InterruptedException {
+        Path outPrefix = workDir.resolve("transcript");
+        List<String> cmd = new ArrayList<>();
+        cmd.add(cliPath);
+        cmd.add("-m");
+        cmd.add(resolvedModelFile.toString());
+        cmd.add("-f");
+        cmd.add(wav.toAbsolutePath().toString());
+        cmd.add("-l");
+        cmd.add(language == null || language.isBlank() ? "az" : language.trim());
+        cmd.add("-t");
+        cmd.add(String.valueOf(effectiveThreads()));
+        cmd.add("-nt");
+        cmd.add("-np");
+        cmd.add("-ng"); // CPU-only image
+        cmd.add("-of");
+        cmd.add(outPrefix.toAbsolutePath().toString());
+        cmd.add("-otxt");
+
+        log.info("whisper-cli start | {}", String.join(" ", cmd));
+        String combined = runCommand(cmd, "whisper-cli");
+
+        Path txt = Path.of(outPrefix + ".txt");
+        if (Files.isRegularFile(txt)) {
+            String text = Files.readString(txt, StandardCharsets.UTF_8).trim();
+            if (!text.isEmpty()) {
+                return text;
+            }
+        }
+        // Fallback: some builds print plain text when -np is set
+        String fallback = combined.lines()
+                .map(String::trim)
+                .filter(l -> !l.isEmpty())
+                .filter(l -> !l.startsWith("whisper_"))
+                .filter(l -> !l.startsWith("ggml_"))
+                .filter(l -> !l.startsWith("system_info"))
+                .filter(l -> !l.startsWith("main:"))
+                .filter(l -> !l.contains("processing"))
+                .collect(Collectors.joining("\n"))
+                .trim();
+        if (!fallback.isEmpty()) {
+            return fallback;
+        }
+        throw new IOException("whisper-cli produced empty transcript; log=" + preview(combined, 800));
+    }
+
+    private String runCommand(List<String> cmd, String label) throws IOException, InterruptedException {
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        StringBuilder all = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                all.append(line).append('\n');
+                if (line.length() < 500) {
+                    log.info("[{}] {}", label, line);
+                }
+            }
+        }
+        int exitCode = process.waitFor();
+        log.info("{} finished | exitCode={}", label, exitCode);
+        if (exitCode != 0) {
+            throw new RuntimeException(label + " failed exitCode=" + exitCode + " output=" + preview(all.toString(), 800));
+        }
+        return all.toString();
+    }
+
+    private static void ensureBinary(String pathOrName, String label) throws IOException {
+        Path asPath = Path.of(pathOrName);
+        if (asPath.isAbsolute()) {
+            if (!Files.isRegularFile(asPath)) {
+                throw new IOException(label + " binary missing: " + pathOrName);
+            }
+            log.info("Binary ok | label={} path={}", label, pathOrName);
+            return;
+        }
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", "command -v " + pathOrName);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            int code = p.waitFor();
+            if (code != 0 || out.isEmpty()) {
+                throw new IOException(label + " not found on PATH: " + pathOrName);
+            }
+            log.info("Binary ok | label={} path={}", label, out);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while locating " + label, e);
         }
     }
 
@@ -176,85 +299,6 @@ public class WhisperService {
         } catch (IOException e) {
             log.warn("Temp cleanup failed | path={} error={}", root, e.getMessage());
         }
-    }
-
-    private int runPython(String script, String label) throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(pythonPath, "-c", script);
-        pb.redirectErrorStream(true);
-        Map<String, String> env = pb.environment();
-        env.put("PYTHONHTTPSVERIFY", "0");
-        env.put("CURL_CA_BUNDLE", "");
-        env.put("REQUESTS_CA_BUNDLE", "");
-        env.put("SSL_CERT_FILE", "");
-
-        log.debug("Starting python process | label={}", label);
-        Process process = pb.start();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                log.info("[python:{}] {}", label, line);
-            }
-        }
-        int exitCode = process.waitFor();
-        log.info("Python process finished | label={} exitCode={}", label, exitCode);
-        return exitCode;
-    }
-
-    private String runPythonCapture(String script, String label) throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(pythonPath, "-c", script);
-        pb.redirectErrorStream(true);
-        Map<String, String> env = pb.environment();
-        env.put("PYTHONHTTPSVERIFY", "0");
-        env.put("CURL_CA_BUNDLE", "");
-        env.put("REQUESTS_CA_BUNDLE", "");
-        env.put("SSL_CERT_FILE", "");
-
-        log.debug("Starting python process | label={}", label);
-        Process process = pb.start();
-        StringBuilder all = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                all.append(line).append('\n');
-                if (!line.startsWith("TRANSCRIPT_") && !isLikelyTranscriptBody(all, line)) {
-                    log.info("[python:{}] {}", label, line);
-                }
-            }
-        }
-        int exitCode = process.waitFor();
-        log.info("Python process finished | label={} exitCode={}", label, exitCode);
-        if (exitCode != 0) {
-            throw new RuntimeException("Transcription failed: " + all);
-        }
-        return all.toString();
-    }
-
-    private boolean isLikelyTranscriptBody(StringBuilder all, String line) {
-        return all.indexOf("TRANSCRIPT_START") >= 0 && all.indexOf("TRANSCRIPT_END") < 0
-                && !"TRANSCRIPT_START".equals(line);
-    }
-
-    private String extractTranscript(String output) {
-        int start = output.indexOf("TRANSCRIPT_START");
-        int end = output.indexOf("TRANSCRIPT_END");
-        if (start >= 0 && end > start) {
-            return output.substring(start + "TRANSCRIPT_START".length(), end).trim();
-        }
-        // Fallback: last non-empty line that is not a status marker
-        String[] lines = output.split("\n");
-        for (int i = lines.length - 1; i >= 0; i--) {
-            String line = lines[i].trim();
-            if (!line.isEmpty()
-                    && !line.startsWith("PYTHON:")
-                    && !line.equals("TRANSCRIPT_START")
-                    && !line.equals("TRANSCRIPT_END")
-                    && !line.equals("MODEL_LOADED")) {
-                return line;
-            }
-        }
-        return output.trim();
     }
 
     private static String preview(String text, int max) {
