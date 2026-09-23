@@ -29,10 +29,14 @@ RUN git clone --depth 1 --branch "${WHISPER_CPP_REF}" https://github.com/ggergan
  && cmake -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DGGML_NATIVE=OFF \
+      -DBUILD_SHARED_LIBS=OFF \
  && cmake --build build -j"$(nproc)" --target whisper-cli \
  && test -x build/bin/whisper-cli \
- && cp build/bin/whisper-cli /usr/local/bin/whisper-cli \
- && chmod +x /usr/local/bin/whisper-cli
+ && mkdir -p /opt/whisper/bin /opt/whisper/lib \
+ && cp build/bin/whisper-cli /opt/whisper/bin/whisper-cli \
+ && find build -type f \( -name 'libwhisper.so*' -o -name 'libggml*.so*' \) -exec cp -a {} /opt/whisper/lib/ \; \
+ && chmod +x /opt/whisper/bin/whisper-cli \
+ && (ldd /opt/whisper/bin/whisper-cli || true)
 
 # ---- runtime ----
 FROM eclipse-temurin:25-jre-jammy
@@ -43,6 +47,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     WHISPER_LANGUAGE=az \
     WHISPER_THREADS=0 \
     WHISPER_CLI_PATH=/usr/local/bin/whisper-cli \
+    LD_LIBRARY_PATH=/usr/local/lib \
     UPLOAD_DIR=/data/uploads \
     RESULTS_DIR=/data/results \
     JAVA_OPTS="-Xms512m -Xmx2g"
@@ -55,13 +60,19 @@ RUN apt-get update \
       bash \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=whisper-build /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=whisper-build /opt/whisper/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=whisper-build /opt/whisper/lib/ /usr/local/lib/
 COPY --from=build /workspace/app.jar /app/app.jar
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
 WORKDIR /app
 RUN chmod +x /app/entrypoint.sh /usr/local/bin/whisper-cli \
  && mkdir -p /models/whisper /data/uploads /data/results/partial /data/results/final \
+ && ldconfig \
+ && (ldd /usr/local/bin/whisper-cli 2>&1 | tee /tmp/whisper-ldd.txt || true) \
+ && if grep -q 'not found' /tmp/whisper-ldd.txt; then \
+      echo "ERROR: whisper-cli missing shared libs:" && cat /tmp/whisper-ldd.txt && exit 1; \
+    fi \
  && whisper-cli -h >/dev/null 2>&1 || true
 
 VOLUME ["/models/whisper", "/data/uploads", "/data/results"]

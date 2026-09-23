@@ -10,15 +10,17 @@ Meeting uses **whisper.cpp** (`whisper-cli`), not Python/PyTorch OpenAI Whisper.
 
 ```bash
 cd ~/ingress-meeting
-# Optional: drop old PyTorch .pt cache (new ggml files use different names)
-# docker volume rm ingress-meeting_whisper-models
-
+git pull
 docker compose build --no-cache
 docker compose up -d
 docker compose logs -f
 ```
 
 Look for: `Whisper.cpp ready | cli=... model=...ggml-large-v3-q5_0.bin`
+
+The image ships `whisper-cli` **and** its shared libs (`libwhisper` / `libggml`) with
+`LD_LIBRARY_PATH=/usr/local/lib`. If you ever see
+`error while loading shared libraries: libwhisper.so.1`, rebuild with `--no-cache`.
 
 ## Env
 
