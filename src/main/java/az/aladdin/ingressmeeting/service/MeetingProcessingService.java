@@ -1,5 +1,6 @@
 package az.aladdin.ingressmeeting.service;
 
+import az.aladdin.ingressmeeting.config.AsyncConfig;
 import az.aladdin.ingressmeeting.model.JobRecord;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -33,7 +34,7 @@ public class MeetingProcessingService {
         this.academyCallbackService = academyCallbackService;
     }
 
-    @Async
+    @Async(AsyncConfig.MEETING_EXECUTOR)
     public CompletableFuture<ProcessingResult> processStoredUpload(String jobId,
                                                                    UploadStorageService.StoredUpload upload) {
         String filename = upload.originalFilename();
