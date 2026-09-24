@@ -5,11 +5,12 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Optional — only for standalone /api/openai/process (Whisper path does not summarize)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       API_SECRET_KEY: ${API_SECRET_KEY:-}
       ACADEMY_CALLBACK_BASE_URL: ${ACADEMY_CALLBACK_BASE_URL:-}
       # whisper.cpp ggml (quantized large-v3 — much faster on CPU than PyTorch)
-      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3-q5_0}
+      WHISPER_MODEL: ${WHISPER_MODEL:-medium}
       WHISPER_MODEL_DIR: /models/whisper
       WHISPER_LANGUAGE: az
       WHISPER_THREADS: ${WHISPER_THREADS:-0}

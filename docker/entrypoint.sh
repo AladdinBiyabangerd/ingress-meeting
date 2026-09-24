@@ -5,7 +5,7 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') [entrypoint] $*"
 }
 
-MODEL_NAME="${WHISPER_MODEL:-large-v3-q5_0}"
+MODEL_NAME="${WHISPER_MODEL:-medium}"
 MODEL_DIR="${WHISPER_MODEL_DIR:-/models/whisper}"
 
 # Map friendly names → ggml file on disk

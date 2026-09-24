@@ -20,7 +20,7 @@ spring:
 
 whisper:
   # ggml model name without path, e.g. large-v3-q5_0 → ggml-large-v3-q5_0.bin
-  model: ${WHISPER_MODEL:large-v3-q5_0}
+  model: ${WHISPER_MODEL:medium}
   model-dir: ${WHISPER_MODEL_DIR:${user.home}/.cache/whisper}
   cli-path: ${WHISPER_CLI_PATH:whisper-cli}
   ffmpeg-path: ${WHISPER_FFMPEG_PATH:ffmpeg}
